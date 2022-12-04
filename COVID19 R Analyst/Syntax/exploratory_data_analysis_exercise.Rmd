@@ -1,0 +1,555 @@
+---
+title: "Exploratory Data Analysis Exercise"
+author: "Mayra Smith-Coronado"
+date: "`r format(Sys.Date(), '%d %B, %Y')`"
+output: 
+  html_document:
+    css: output_styles.css
+    toc: true
+    toc_depth: 4
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Description of Exercises
+
+1. Use data from the CDC available for download from [here](https://covid.cdc.gov/covid-data-tracker/#cases) to create a map showing US COVID-19 case incidence per 100,000 in the last 7 days. You'll also need to find and use state-level population estimates. Please only include the 48 continental US states, Alaska, and Hawaii in your final figure.
+
+1. Use state-level historical data from the [COVID Tracking Project](https://covidtracking.com/) to visualize
+  + The 7-day moving average of new cases reported per 100,000
+  + The 7-day moving average of daily PCR tests conducted per 100,000 people
+  + The 7-day moving average of percent positivity (person-level positive PCR tests divided by the total number of people who received a PCR test each day)
+  
+All three metrics should include Colorado and our neighboring states, including Texas.
+
+You can produce more than one figure for each metric, or chose to focus on a single, most effective figure for each.
+If you don't feel like you can produce a final figure that you're happy with, please make a final data set with values and a clean format that you or someone else could use to create the corresponding figure in a different software environment.
+
+Please include all of the code you write, any raw data sets you download, and any output data that you produce.
+Feel free to include your thought process and any questions that come up as you work through both tasks. What data quality issues are there? How meaningful/interpretable are your final figures due to these issues?
+Document the source for any raw data in your code and final output, and make your analysis reproducible. In other words, please provide everything we would need (code, raw data sets, R packages used, etc.) so that we could run your code and create the same final output.
+An RMarkdown document (PDF, HTML, or Word is fine) is one option to share those thoughts, your code, and final figures. R scripts with comments and final images (PNG) is fine too.
+
+Your analysis is due to us via email by 11:59 pm on Saturday, September 5th. 
+
+```{r packages, message = FALSE, warning=FALSE}
+# remotes::install_github("wilkelab/cowplot")
+# install.packages("colorspace", repos = "http://R-Forge.R-project.org")
+# remotes::install_github("clauswilke/colorblindr")
+
+library(tidyverse) #loads multiple packages for BP data management, viz, and more. Should always include
+library(janitor) #for cleaning data
+library(tidycensus) # package to connect to the census
+library(ggplot2) # package to make visuals
+library(lubridate) # package to work with date variables
+library(zoo) # package to help calculate the moving average
+library(rlang) # package to create functions that call column names
+library(knitr) # package to style tables
+library(scales) # package to clean up plot labels
+library(colorblindr) # package to make sure plots are color blind safe
+```
+
+## Load Data
+
+### Import Downloaded Data
+
+- **last_seven_days_data** was downloaded from the [CDC COVID Data Tracker](https://covid.cdc.gov/covid-data-tracker/#cases). This data was specifically pulled on Monday September 31st and represents the number of COVID-19 cases seen in the past 7 days. 
+
+- **covid_historical_data** was downloaded from the [COVID Tracking Project](https://covidtracking.com/).This data was specifically pulled on Monday September 31st. 
+
+```{r data, echo=TRUE}
+# data for exercise 1
+# note: review this file to see which states or territories we need to exclude from the
+# final data set
+last_seven_days_data <- read_csv(
+  file = "../Raw Data/cases_in_last_7_days_by_state_territory.csv") %>% 
+  # clean variable names
+  clean_names() %>% 
+  # arrange data by state/territory
+  arrange(state_territory)
+nrow(last_seven_days_data) 
+
+# data for exercise 2
+covid_historical_data <- read_csv(
+  file = "../Raw Data/all-states-history.csv") %>% 
+  # clean variable names
+  clean_names()
+nrow(covid_historical_data)
+```
+
+### Gather Population Estimates
+
+Will plan to use the estimates stored in the variable **population_estimate_v2** since estimates are relatively similar to 2019 population estimates seen in the US Census Bureau Quick Facts page.
+
+```{r}
+# Set up API Connection
+census_api_key('a3812385a138d4d45b5ed7a65e7eaf0d9192059c')
+
+# view variables from acs5
+v17 <- load_variables(2017, "acs5", cache = TRUE)
+# View(v17)
+```
+
+```{r results = FALSE}
+# retrieve population estimates ("B00001_001") from American Community Survey (ACS for each state
+# note this is data from 2014-2018
+population_estimate <- get_acs(
+  geography = "state",
+  variable = "B00001_001",
+  geometry = TRUE) %>% 
+  clean_names()
+```
+
+```{r}
+# examine the number of states we have information for
+nrow(population_estimate)
+```
+
+```{r results = FALSE}
+# retrieve population estimates US Census Bureau Population Estimates APIs. 
+# note this is data from 2018 and will only include the 48 continental US states, Alaska,
+# and Hawaii.
+population_estimate_v2 <- get_estimates(
+  geography = "state",
+  product = "population",
+  geometry = TRUE) %>% 
+  # clean up the names of variables
+  clean_names() %>% 
+  # only keep population estimates and not density values
+  filter(variable != "DENSITY") %>% 
+  # rename name to state_territory to align with the covid 19 data
+  rename(state_territory = name) %>% 
+  # rename value to be more descriptive of the information it contains
+  rename(population_estimate = value) %>% 
+  # order information by state name
+  arrange(state_territory) %>% 
+  # remove estimates for the district of columnbia and puerto rico
+  filter(!(state_territory %in% c("District of Columbia", "Puerto Rico")))
+```
+
+```{r}
+# examine the number of states and territories we have information for (should be 50)
+nrow(population_estimate_v2) 
+```
+
+## Exercise 1
+
+### Data Clean Up and Prep
+
+Compare state names between the **last_seven_days_data** and **population_estimates_v2** and make sure they are compatible. After reviewing compatibility, merge the two data sets together.
+
+```{r, echo = T}
+# since the last_seven_days_data has more states/territories than the population_estimates_v2
+# explore which states/territories it contains that the the latter data set doesn't
+non_matching_state_territory_location <- which(!(last_seven_days_data$state_territory %in% population_estimate_v2$state_territory))
+
+# view the names of the state/territory that the population estimate data doesn't have
+last_seven_days_data$state_territory[non_matching_state_territory_location]
+
+# after viewing the states and territories that don't match between the two data frames, we know
+# that the additional state/territories in the last seven days data can be deleted since we don't
+# want to include these in the final figure. Because of this I will just do a left join to remove
+#those that don't match
+last_seven_days_map_data <- population_estimate_v2 %>% 
+  left_join(last_seven_days_data)
+```
+
+Using the combined data set, calculate the COVID-19 case incidence per 100,000 in the last 7 days. From the histogram, it seems like there are a lot of states who have rates of 150 or less and a handful that have more than 150 cases of COVID-19 in the past 7 days per 100,000 people. 
+
+```{r}
+last_seven_days_map_data <- last_seven_days_map_data %>% 
+  mutate(covid_rate = cases_in_last_7_days/population_estimate * 100000)
+
+# examine the distribution of rate.
+last_seven_days_map_data %>% 
+  ggplot(aes(x = covid_rate)) + 
+  geom_histogram(
+    color = "gray80",
+    fill="#7F9593") +
+  theme_minimal()
+```
+
+### Map Creation
+
+Planning to use ggplot to make a map instead of leaflet since I am assuming this will be a static visual in a document. The first map will display rates continuously.
+
+*Note: Alaska looks really large in this image and Hawaii is a little hard to see. Need to explore how to update this.*
+
+```{r}
+# create map displaying covid rate data. The color scheme here is continuous
+last_seven_days_map_data  %>%
+  ggplot(aes(fill = covid_rate)) +
+  geom_sf(
+    color = "gray50") +
+  # crop the map to be zoomed in on locations
+  coord_sf(
+    xlim = c(-185, -60),
+    ylim = c(15, 75),
+    expand = FALSE) +
+  # update color
+  scale_fill_gradient(
+    low = "#F6EAEA",
+    high = "#284951") +
+# clean up map image
+  theme_minimal() +
+  theme(
+    axis.line = element_blank(), # remove axis line 
+    axis.text = element_blank(), # remove axis text
+    panel.grid = element_blank()
+  )
+```
+
+The second map displays the rates where they are broken down into 6 bins with an interval of 50. The goal for this one was to help make it easier to interpret the rates and compare states to one another. 
+```{r}
+# create a discrete variable that separates the rates into intervals of 50
+last_seven_days_map_data <- last_seven_days_map_data %>%
+  # separate rates based on an interval of 50
+  mutate(rate_discrete = cut_interval(covid_rate, length = 50)) %>% 
+  # update labels of the discrete variable
+  mutate(rate_discrete = case_when(
+    rate_discrete == "[0,50]" ~ "0 to 50",
+    rate_discrete == "(50,100]" ~ "51 to 100",
+    rate_discrete == "(100,150]" ~ "101 to 150",
+    rate_discrete == "(150,200]" ~ "151 to 200",
+    rate_discrete == "(200,250]" ~ "201 to 250",
+    rate_discrete == "(250,300]" ~ "251 to 300",
+  )) %>% 
+  # set the order of the discrete variable
+  mutate(rate_discrete = as.factor(rate_discrete)) %>% 
+  mutate(rate_discrete = factor(
+    rate_discrete,
+    levels = c("0 to 50", "51 to 100", "101 to 150", "151 to 200",
+               "201 to 250", "251 to 300")))
+
+# create second map
+(discrete_map <- last_seven_days_map_data  %>%
+  ggplot(aes(fill = rate_discrete)) +
+  # add state borders 
+  geom_sf(
+    color = "gray50") +
+  # crop the map to be zoomed in on locations
+  coord_sf(
+    xlim = c(-185, -60),
+    ylim = c(15, 75),
+    expand = FALSE) +
+  # update color & reverse legend
+  scale_fill_manual(
+    values = c("#EDEDEF", "#E2DDDA", "#c7cfd1", "#9dadb0", "#789093", "#33565C"),
+    guide = guide_legend(reverse = TRUE, title = "Cases per 100,000")) + 
+  # clean up map image
+  theme_minimal() +
+  theme(
+    axis.line = element_blank(), # remove axis line 
+    axis.text = element_blank(), # remove axis text
+    panel.grid = element_blank()
+  ))
+```
+
+After reviewing both maps, I preferred the second map since it was easier to distinguish what group each state belonged to and easier to compare states/regions to each other. Now look at the second map across various color-vision-deficiency simulations.
+
+```{r}
+cvd_grid(discrete_map)
+```
+
+The last two colors are slightly hard to tell apart, but not impossible. Making one color lighter or darker would cause a similar issue, if we want these categories distinguishable we could use a color palette where all the colors are different rather than a gradient. For this specific visual, I think it is okay to leave the current color palette since the goal is to see which states are similar.
+
+## Exercise 2
+
+### Review Data
+
+Since the moving average uses information from the last 7 days, check each of the variables used to calculate the wanted moving average per state to make sure that the average can be calculated.
+
+Variable descriptions for COVID-19 historical data:
+
+ +  **state:** Two-letter abbreviation for the state or territory.
+ +  **date:** Date on which data was collected by The COVID Tracking Project
+ +  **positive_increase:** New Cases
+ +  **total_test_encounters_viral:** Total number of people tested per day via PCR testing as reported by the state or territory
+ +  **positive_cases_viral:** Total number of unique people with a completed PCR test that returns positive as reported by the state or territory.
+
+```{r}
+covid_historical_data %>% 
+  # filter information for CO and neighboring states and Texas
+  filter(state %in% c("CO", "UT", "AZ", "NM", "NE", "KS", "OK", "WY", "TX")) %>%
+  # by state
+  group_by(state) %>% 
+  # count the number of none missing values are present for each variable
+  summarise(
+    not_missing_new_cases = sum(!is.na(positive_increase)),
+    not_missing_pcr_tests = sum(!is.na(total_test_encounters_viral)),
+    not_missing_positive_test = sum(!is.na(positive_cases_viral))) %>% 
+  # display results in a formatted table
+  kable()
+```
+
+From the table above, for states neighboring Colorado (including Texas), the total number of people tested per day via PCR testing is missing for each state. Because of this, the 7-day moving average of daily PCR tests conducted per 100,000 people and percent positivity can only be calculated for Colorado.
+
+### Data Clean Up and Prep
+
+Cleaning Steps
+
+1. Condense the historical data to be for the following states: Colorado (CO), Utah (UT), Arizona (AZ), New Mexico (NM), Nebraska (NE), Kansas (KS), Oklahoma (OK), Wyoming (WY), and Texas (TX).
+
+2. Additionally only keep information relevant for the second exercise, create a state variable that isn't abbreviated, and update the format of the date variable. Use the [variable descriptions](https://covidtracking.com/about-data/data-definitions) to select the variables needed.
+ 
+3. Calculate rates and percent
+
+4. Calculate the 7 day moving average
+
+```{r, echo = T}
+# Step 1 to 3
+cleaned_historical_data <- covid_historical_data %>%
+  # filter information for CO and neighboring states and Texas
+  filter(state %in% c("CO", "UT", "AZ", "NM", "NE", "KS", "OK", "WY", "TX")) %>%
+  # create a new variable that contains the full names instead of abbreviations
+  mutate(state_territory  = case_when(
+    state == "CO" ~ "Colorado",
+    state == "UT" ~ "Utah",
+    state == "AZ" ~ "Arizona",
+    state == "NM" ~ "New Mexico",
+    state == "NE" ~ "Nebraska",
+    state == "KS" ~ "Kansas",
+    state == "OK" ~ "Oklahoma",
+    state == "WY" ~ "Wyoming",
+    state == "TX" ~ "Texas"
+  )) %>% 
+  # update format of the date variable
+  mutate(date = ymd(date)) %>% 
+  # merge population estimates
+  left_join(population_estimate_v2) %>% 
+  # keep only relevant information
+  select(date, state_territory, state, population_estimate, positive_increase, total_tests_viral,
+         positive_cases_viral, total_test_encounters_viral) %>% 
+  # calculate the number of new cases reported per 100,000 people
+  mutate(rate_of_new_cases = positive_increase/population_estimate * 100000) %>% 
+  # calculate the number of daily PCR tests conducted per 100,000 people
+  mutate(rate_of_pcr_tests = total_test_encounters_viral/population_estimate * 100000) %>% 
+  # calculate the percent of positivity
+  mutate(percent_positivity = positive_cases_viral/total_test_encounters_viral)
+```
+
+```{r}
+# step 4
+# note moving averages for PCR test and Percent positivity
+# will only be calculated for Colorado
+moving_average <- cleaned_historical_data %>%
+  group_by(state) %>% 
+  # calculate the 7 day moving averages
+  mutate(new_case_moving_ave = rollmean(
+    rate_of_new_cases,
+    k = 7,
+    fill = NA)) %>% 
+  mutate(pcr_test_moving_ave = rollmean(
+    rate_of_pcr_tests,
+    k = 7,
+    fill = NA)) %>% 
+  mutate(percent_positivity_moving_ave = rollmean(
+    percent_positivity,
+    k = 7,
+    fill = NA
+  )) %>% 
+  # order information by state
+  mutate(state = as.factor(state)) %>%
+  mutate(state = factor(state,
+                        levels = c("CO", "UT", "AZ", "NM", "NE", "KS", "OK", "WY", "TX"))) %>%
+  arrange(state)
+
+```
+
+
+### Explore Visuals
+
+For this section, we will be using the information from the 7-day moving average of new cases reported per 100,000 that we calculated for each state to explore visuals.
+
+#### Small Multiples
+
+Display the moving average for each state overtime. 
+```{r}
+moving_average %>% 
+  ggplot(aes(x = date, y = new_case_moving_ave, color = state)) +
+  # create a line chart
+  geom_line() +
+  # set up the y axis labels
+  scale_y_continuous(
+    breaks=c(0,30)) + 
+  # clean up the x axis labels
+  scale_x_date(
+    date_breaks = "1 month",
+    breaks = as.Date(c("2020-03-01", "2020-10-01")),
+    minor_breaks = as.Date(c("2020-04-01", "2020-05-01", "2020-06-01",
+    "2020-07-01", "2020-08-01", "2020-09-01", "2020-10-01")),
+    date_labels = "%B") +
+  # set the color of the lines
+  scale_color_manual(values = rep("#1F4045", times = 9)) +
+  # clean up the general look of the charts
+  theme_minimal() + 
+  theme(strip.background = element_blank(),
+        strip.text.x = element_blank(),
+        legend.position = "none",
+        axis.title = element_blank()) +
+  # separate the chart to display a chart for each state
+  facet_grid(state ~ .)
+```
+
+From this chart, it is hard to compare the moving average of the Colorado to the other states; however, it does help show the distribution of new cases by state. To further get meaningful information from this chart, it would be interesting to see how mandates and regulations align with increases or decreases in cases. 
+
+#### Combined Trend Chart
+
+Instead of displaying the moving average separately for each state, I'm going to plot all the trend lines together to see how Colorado is doing compared to neighboring states.
+
+For this chart, explore how it would look if different colors are used for
+colors for each state. Update colors if choosing this chart.
+```{r}
+moving_average %>%
+  ggplot(aes(x = date, y = new_case_moving_ave, color = state)) +
+  # reverse order of the states so Colorado is plotted last
+  aes(group=rev(state)) +
+  # assign the colors to each line
+  geom_line(size=0.5) +
+  # adjust the x-axis to mark the first of each month
+  scale_x_date(
+    date_breaks = "1 month",
+    breaks = as.Date(c("2020-03-01", "2020-10-01")),
+    minor_breaks = as.Date(c("2020-04-01", "2020-05-01", "2020-06-01",
+    "2020-07-01", "2020-08-01", "2020-09-01", "2020-10-01")),
+    date_labels = "%B") +
+  # clean up the layout of the chart
+  theme_minimal()
+```
+
+The colors added more noise to the chart and make it harder to get anything meaningful. For this reason, a new chart will be developed where Colorado's moving average is a different color than the other states.
+
+```{r}
+moving_ave_basic_plot <- moving_average %>%
+  ggplot(aes(x = date, y = new_case_moving_ave, color = state)) +
+  # reverse order of the states so Colorado is plotted last
+  aes(group=rev(state)) + 
+  # assign the colors to each line
+  scale_colour_manual(values = c("#1F4045", rep("#EBCDC3", times = 8))) +
+  # set thickness of the line
+  geom_line(size=0.5) + 
+  # adjust the x-axis to mark the first of each month
+  scale_x_date(
+    date_breaks = "1 month",
+    breaks = as.Date(c("2020-03-01", "2020-10-01")),
+    minor_breaks = as.Date(c("2020-04-01", "2020-05-01", "2020-06-01",
+    "2020-07-01", "2020-08-01", "2020-09-01", "2020-10-01")),
+    date_labels = "%B") +
+  # clean up the layout of the chart
+  theme_minimal() +
+  theme(axis.title = element_blank(),
+        legend.position = "none")
+
+moving_ave_basic_plot
+```
+
+This plot does a great job of helping to compare Colorado to the other states and because of this I will be mimicking this chart for the other moving averages. One downside to this chart is that since the other states are the same color, it is difficult to compare Colorado to another state. This issue would be corrected if the chart was on a dashboard or interactive document.
+
+Since this style will be used for all moving average plots, evaluate it and see how it looks across various color-vision-deficiency simulations. Adjust colors and line thickness until it looks good across all 4 simulations
+
+```{r}
+cvd_grid(moving_ave_basic_plot)
+```
+
+
+#### Create a Chart Function
+
+Since a chart was selected to display the moving average, a function will be created to help simplify the creation of all three plots for the second exercise.
+
+```{r}
+trend_chart <- function(data, moving_average_variable, color_values,
+                        y_label_format, legend_position){
+  data %>%
+  ggplot(aes(x = date, y = {{ moving_average_variable }}, color = state)) +
+    # reverse order of the states so Colorado is plotted last
+    aes(group=rev(state)) + 
+    # assign the colors to each line
+    scale_colour_manual(values = color_values) +
+    # set thickness of the line
+    geom_line(size=0.5) + 
+    # adjust the x-axis to mark the first of each month
+    scale_x_date(
+      date_breaks = "1 month",
+      breaks = as.Date(c("2020-03-01", "2020-10-01")),
+      minor_breaks = as.Date(c("2020-04-01", "2020-05-01", "2020-06-01",
+                               "2020-07-01", "2020-08-01", "2020-09-01",
+                               "2020-10-01")),
+      date_labels = "%B") +
+    # adjust the y-axis label
+    scale_y_continuous(
+      label = y_label_format
+    ) +
+    # clean up the layout of the chart
+    theme_minimal() +
+    theme(axis.title = element_blank(),
+          legend.position = legend_position,
+          legend.title = element_blank())
+}
+```
+
+### Moving Average Visuals
+
+Now using the function developed, create the charts.
+
+#### New Cases
+```{r}
+trend_chart(
+  data = moving_average,
+  moving_average_variable = new_case_moving_ave,
+  color_values = c("#1F4045", rep("#EBCDC3", times = 8)),
+  y_label_format = comma,
+  legend_position = "right"
+)
+```
+
+
+#### PCR Tests
+```{r}
+co_moving_average = moving_average %>%
+  filter(state == "CO")
+
+trend_chart(
+  data = co_moving_average,
+  moving_average_variable = pcr_test_moving_ave,
+  color_values = c("#1F4045"),
+  y_label_format = comma,
+  legend_position = "none"
+)
+```
+
+
+#### Percent Positivity
+```{r}
+trend_chart(
+  data = co_moving_average,
+  moving_average_variable = percent_positivity_moving_ave,
+  color_values = c("#1F4045"),
+  y_label_format = label_percent(),
+  legend_position = "none")
+```
+
+## Save Cleaned Data
+
+```{r}
+# save last seven data data as a csv file for data checks and rdata file to keep variable information (factor levels, date format, etc)
+write_csv(last_seven_days_map_data, 
+          "../Output/last_seven_days_map_data.csv")
+
+save(last_seven_days_map_data, 
+     file = "../Output/last_seven_days_map_data.rdata")
+
+# save final moving average data as a csv file for data checks and rdata file to keep variable information (factor levels, date format, etc)
+write_csv(moving_average,
+          "../Output/moving_average_data.csv")
+
+save(moving_average,
+     file = "../Output/moving_average_data.rdata")
+```
+
+
+## Final Thoughts
+
+Thank you for reviewing this document! I hope you were able to follow along and see how I think when exploring data and creating new visuals. Now that all the data is prepared and the visuals have been explored, I will be creating a new document with the final visuals. For the next rmd file you will need to have the package **pagedown** downloaded.

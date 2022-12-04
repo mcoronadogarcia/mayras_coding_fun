@@ -1,0 +1,145 @@
+---
+knit: pagedown::chrome_print
+output:
+  pagedown::html_paged:
+    self_contained: TRUE
+    number_sections: FALSE
+    fig_caption: TRUE
+    css: ["output_styles.css"]
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+```{r packages, message = FALSE, warning=FALSE, include = FALSE}
+library(tidyverse) #loads multiple packages for BP data management, viz, and more. Should always include
+library(janitor) #for cleaning data
+library(ggplot2) # package to make visuals
+library(rlang) # package to create functions that call column names
+library(knitr) # package to style tables
+library(scales) # package to clean up plot labels
+```
+
+```{r load data, include = FALSE}
+load("../Output/last_seven_days_map_data.rdata")
+load("../Output/moving_average_data.rdata")
+```
+
+```{r set up trend chart function}
+trend_chart <- function(data, moving_average_variable, color_values,
+                        y_label_format, legend_position){
+  data %>%
+  ggplot(aes(x = date, y = {{ moving_average_variable }}, color = state)) +
+    # reverse order of the states so Colorado is plotted last
+    aes(group=rev(state)) + 
+    # assign the colors to each line
+    scale_colour_manual(values = color_values) +
+    # set thickness of the line
+    geom_line(size=0.5) + 
+    # adjust the x-axis to mark the first of each month
+    scale_x_date(
+      date_breaks = "1 month",
+      breaks = as.Date(c("2020-03-01", "2020-10-01")),
+      minor_breaks = as.Date(c("2020-04-01", "2020-05-01", "2020-06-01",
+                               "2020-07-01", "2020-08-01", "2020-09-01",
+                               "2020-10-01")),
+      date_labels = "%B") +
+    # adjust the y-axis label
+    scale_y_continuous(
+      label = y_label_format
+    ) +
+    # clean up the layout of the chart
+    theme_minimal() +
+    theme(axis.title = element_blank(),
+          legend.position = legend_position,
+          legend.title = element_blank())
+}
+```
+
+# Final Visuals
+<center>By: Mayra Smith-Coronado</center>
+<center>`r format(Sys.Date(), '%d %B, %Y')`</center>
+
+## Exercise 1
+
+Use data from the CDC available for download from [here](https://covid.cdc.gov/covid-data-tracker/#cases) to create a map showing US COVID-19 case incidence per 100,000 in the last 7 days. You'll also need to find and use state-level population estimates. Please only include the 48 continental US states, Alaska, and Hawaii in your final figure.
+
+```{r cars}
+last_seven_days_map_data  %>%
+  ggplot(aes(fill = rate_discrete)) +
+  # add state borders 
+  geom_sf(
+    color = "gray50") +
+  # crop the map to be zoomed in on locations
+  coord_sf(
+    xlim = c(-185, -60),
+    ylim = c(15, 75),
+    expand = FALSE) +
+  # update color & reverse legend
+  scale_fill_manual(
+    values = c("#EDEDEF", "#E2DDDA", "#c7cfd1", "#9dadb0", "#789093", "#33565C"),
+    guide = guide_legend(reverse = TRUE, title = "Cases per 100,000")) + 
+  # clean up map image
+  theme_minimal() +
+  theme(
+    axis.line = element_blank(), # remove axis line 
+    axis.text = element_blank(), # remove axis text
+    panel.grid = element_blank()
+  )
+```
+
+\newpage
+
+## Exercise 2
+
+Use state-level historical data from the COVID Tracking Project to visualize
+
+- The 7-day moving average of new cases reported per 100,000
+- The 7-day moving average of daily PCR tests conducted per 100,000 people
+- The 7-day moving average of percent positivity (person-level positive PCR tests divided by the total number of people who received a PCR test each day)
+
+---
+
+Since June, <span style = "color: #1F4045;font-weight: bold;">Colorado's</span> 7-day moving average of new cases reported per 100,000 people is estimated to be lower than neighboring states, including Texas. 
+
+```{r new cases chart, fig.height = 2.65, fig.width = 6, fig.align = "center", echo=FALSE, message = FALSE, warning=FALSE}
+trend_chart(
+  data = moving_average,
+  moving_average_variable = new_case_moving_ave,
+  color_values = c("#1F4045", rep("#EBCDC3", times = 8)),
+  y_label_format = comma,
+  legend_position = "right"
+)
+```
+
+---
+
+The number of daily PCR tests conducted per 100,000 people continues to grow in <span style = "color: #1F4045;font-weight: bold;">Colorado</span>.
+
+```{r PCR chart, fig.height = 2.65, fig.width = 6, fig.align = "center", echo=FALSE, message = FALSE, warning=FALSE}
+co_moving_average = moving_average %>%
+  filter(state == "CO")
+
+trend_chart(
+  data = co_moving_average,
+  moving_average_variable = pcr_test_moving_ave,
+  color_values = c("#1F4045"),
+  y_label_format = comma,
+  legend_position = "none"
+)
+```
+
+\newpage
+
+The percent positivity continues to decrease in <span style = "color: #1F4045;font-weight: bold;">Colorado</span>.
+
+```{r percent positivity, fig.height = 2.65, fig.width = 6, fig.align = "center", echo=FALSE, message = FALSE, warning=FALSE}
+trend_chart(
+  data = co_moving_average,
+  moving_average_variable = percent_positivity_moving_ave,
+  color_values = c("#1F4045"),
+  y_label_format = label_percent(),
+  legend_position = "none")
+```
+

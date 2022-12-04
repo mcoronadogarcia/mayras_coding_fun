@@ -1,0 +1,24 @@
+
+
+.list-group-item.active, .list-group-item.active:focus, .list-group-item.active:hover {
+    background-color: #1F4045;
+}
+
+.author {
+  text-align: center;
+}
+
+.date {
+  text-align: center;
+}
+
+h1 {
+  text-align: center;
+}
+
+
+h2 {
+  font-size: 24pt;
+  background-color: #EBCDC3;
+  padding: 0;
+}
